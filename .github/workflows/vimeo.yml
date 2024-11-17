@@ -1,5 +1,9 @@
 name: Scheduled Vimeo Monitor
 
+# 1. Set the necessary permissions
+permissions:
+  contents: write  # Grants write access to the repository contents
+
 on:
   schedule:
     - cron: '0 0 * * *'  # Runs daily at midnight UTC. Adjust as needed.
@@ -20,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'  # Specify desired Python version
+          python-version: '3.10.12'  # Specify desired Python version
 
       # 3. Install dependencies
       - name: Install dependencies
@@ -41,8 +45,7 @@ jobs:
 
       # 5. Run the Python script
       - name: Execute Python script
-        run: |
-          python search.py
+        run: python search.py
         env:
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -58,9 +61,18 @@ jobs:
 
       # 7. Commit and push changes if any
       - name: Commit and push changes
-        run: |
-          git add ${{ secrets.KNOWN_LINKS_FILE }}
-          git diff --cached --exit-code || git commit -m "Update known links [skip ci]"
-          git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KNOWN_LINKS_FILE: ${{ secrets.KNOWN_LINKS_FILE }}
+        run: |
+          # Ensure the KNOWN_LINKS_FILE path is correct
+          git add "$KNOWN_LINKS_FILE"
+          
+          # Check if there are changes to commit
+          git diff --cached --exit-code
+          if [ $? -ne 0 ]; then
+            git commit -m "Update known links [skip ci]"
+            git push origin HEAD:main
+          else
+            echo "No changes to commit."
+          fi
