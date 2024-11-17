@@ -16,7 +16,6 @@ MONITORED_USERS = os.getenv("MONITORED_USERS").split(",")
 KNOWN_LINKS_FILE = os.getenv("KNOWN_LINKS_FILE")
 DATE_FORMAT = "%Y-%m-%d"
 DISCORD_CHAR_LIMIT = 1950  # Discord's character limit
-# Updated FIELDS to include duration and user.pictures.sizes
 FIELDS = "uri,name,link,description,pictures.sizes,user.link,user.name,user.pictures.sizes,width,height,created_time,duration"
 RETRY_LIMIT = 5
 DEFAULT_SLEEP_INTERVAL = 2  # Default rate limiting interval
@@ -28,9 +27,17 @@ def read_known_links():
     with open(KNOWN_LINKS_FILE, 'r') as file:
         return set(line.strip() for line in file)
 
-def write_known_links(links):
-    with open(KNOWN_LINKS_FILE, 'w') as file:
-        for link in links:
+def write_known_links(new_links):
+    """
+    Append new links to the known links file to maintain order.
+    
+    Args:
+        new_links (set): A set of new links to append.
+    """
+    if not new_links:
+        return
+    with open(KNOWN_LINKS_FILE, 'a') as file:
+        for link in new_links:
             file.write(f"{link}\n")
 
 def handle_rate_limiting(headers):
@@ -39,9 +46,16 @@ def handle_rate_limiting(headers):
         reset_time = headers['X-RateLimit-Reset']
 
         try:
+            # Attempt to parse reset_time as a UNIX timestamp
             reset_datetime = datetime.fromtimestamp(int(reset_time), tz=timezone.utc)
-        except ValueError:
-            reset_datetime = datetime.strptime(reset_time, '%Y-%m-%dT%H:%M:%S%z')
+        except (ValueError, TypeError):
+            try:
+                # Fallback: parse as ISO 8601 string
+                reset_datetime = datetime.strptime(reset_time, '%Y-%m-%dT%H:%M:%S%z')
+            except ValueError:
+                print(f"Unexpected format for X-RateLimit-Reset: {reset_time}. Using default sleep interval.")
+                time.sleep(DEFAULT_SLEEP_INTERVAL)
+                return
 
         current_time = datetime.now(timezone.utc)
         if remaining <= 1:
@@ -56,22 +70,27 @@ def handle_rate_limiting(headers):
 def request_with_retries(url, headers, params=None, json=None, method="get"):
     for attempt in range(RETRY_LIMIT):
         try:
-            if method == "get":
+            if method.lower() == "get":
                 response = requests.get(url, headers=headers, params=params)
-                response.raise_for_status()
-                handle_rate_limiting(response.headers)
-                return response.json()
-            elif method == "post":
+            elif method.lower() == "post":
                 response = requests.post(url, headers=headers, json=json)
-                response.raise_for_status()
-                handle_rate_limiting(response.headers)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+
+            response.raise_for_status()
+            handle_rate_limiting(response.headers)
+
+            if method.lower() == "get":
+                return response.json()
+            else:
                 return None  # Webhook does not return JSON
         except requests.exceptions.RequestException as e:
             print(f"Request error ({attempt + 1}/{RETRY_LIMIT}): {e}")
             time.sleep(DEFAULT_SLEEP_INTERVAL)
         except ValueError as e:
-            print(f"JSON decode error ({attempt + 1}/{RETRY_LIMIT}): {e}")
+            print(f"Error processing response ({attempt + 1}/{RETRY_LIMIT}): {e}")
             time.sleep(DEFAULT_SLEEP_INTERVAL)
+    print(f"Failed to {method.upper()} {url} after {RETRY_LIMIT} attempts.")
     return None
 
 def search_vimeo(keyword, per_page=10):
@@ -100,8 +119,8 @@ def get_user_uploads(user_id, per_page=10):
 def extract_video_links(data):
     links = set()
     if data:
-        for item in data['data']:
-            links.add(item['link'])
+        for item in data.get('data', []):
+            links.add(item.get('link'))
     return links
 
 def trim_text(text, max_length, ellipsis=True):
@@ -133,7 +152,7 @@ def send_detailed_to_discord(video_data, keyword):
         user_avatar_url = None
         if user.get('pictures') and user['pictures'].get('sizes'):
             # Use the highest resolution profile picture
-            user_avatar_url = user['pictures']['sizes'][-1]['link']
+            user_avatar_url = user['pictures']['sizes'][-1].get('link')
 
         # Format duration
         duration_seconds = video.get('duration')
@@ -164,16 +183,17 @@ def send_detailed_to_discord(video_data, keyword):
         timestamp = None
         if created_time:
             try:
+                # Remove 'Z' if present and parse ISO format
                 timestamp = datetime.fromisoformat(created_time.rstrip('Z')).replace(tzinfo=timezone.utc).isoformat()
             except ValueError:
                 print(f"Failed to parse created_time: {created_time}")
 
         embed = {
             "title": title,
-            "url": video['link'],
+            "url": video.get('link', ''),
             "description": description,
             "image": {
-                "url": video['pictures']['sizes'][-1]['link']  # Use highest resolution thumbnail
+                "url": video.get('pictures', {}).get('sizes', [{}])[-1].get('link', '')  # Use highest resolution thumbnail
             },
             "fields": fields,
             "author": {
@@ -229,25 +249,27 @@ def main():
         for query in SEARCH_QUERIES:
             response = search_vimeo(query)
             if response:
-                for item in response['data']:
-                    if item['link'] not in known_links:
+                for item in response.get('data', []):
+                    link = item.get('link')
+                    if link and link not in known_links:
                         item['matched_keyword'] = query
                         if query not in new_video_data_per_query:
                             new_video_data_per_query[query] = []
                         new_video_data_per_query[query].append(item)
-                        new_links.add(item['link'])
+                        new_links.add(link)
 
         # Step 2: Check for videos uploaded by monitored users
         for user_id in MONITORED_USERS:
             response = get_user_uploads(user_id)
             if response:
-                for item in response['data']:
-                    if item['link'] not in known_links:
+                for item in response.get('data', []):
+                    link = item.get('link')
+                    if link and link not in known_links:
                         item['matched_keyword'] = f"User: {user_id}"
                         if user_id not in new_video_data_per_query:
                             new_video_data_per_query[user_id] = []
                         new_video_data_per_query[user_id].append(item)
-                        new_links.add(item['link'])
+                        new_links.add(link)
 
         # Filter new links to avoid duplicates
         filtered_new_links = new_links - known_links
@@ -256,7 +278,8 @@ def main():
             for query, video_list in new_video_data_per_query.items():
                 send_detailed_to_discord(video_list, query)
             known_links.update(filtered_new_links)
-            write_known_links(known_links)
+            write_known_links(filtered_new_links)  # Append only new links
+            print(f"Added {len(filtered_new_links)} new link(s) to {KNOWN_LINKS_FILE}.")
         else:
             print("No new links found.")
     except Exception as e:
