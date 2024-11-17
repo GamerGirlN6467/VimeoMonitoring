@@ -37,11 +37,11 @@ jobs:
       # 4. Create .env file from secrets
       - name: Create .env file
         run: |
-          echo "ACCESS_TOKEN=${{ secrets.ACCESS_TOKEN }}" >> .env
-          echo "DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}" >> .env
-          echo "SEARCH_QUERIES=${{ secrets.SEARCH_QUERIES }}" >> .env
-          echo "MONITORED_USERS=${{ secrets.MONITORED_USERS }}" >> .env
-          echo "KNOWN_LINKS_FILE=${{ secrets.KNOWN_LINKS_FILE }}" >> .env
+          echo 'ACCESS_TOKEN="${{ secrets.ACCESS_TOKEN }}"' >> .env
+          echo 'DISCORD_WEBHOOK_URL="${{ secrets.DISCORD_WEBHOOK_URL }}"' >> .env
+          echo 'SEARCH_QUERIES="${{ secrets.SEARCH_QUERIES }}"' >> .env
+          echo 'MONITORED_USERS="${{ secrets.MONITORED_USERS }}"' >> .env
+          echo 'KNOWN_LINKS_FILE="${{ secrets.KNOWN_LINKS_FILE }}"' >> .env
 
       # 5. Run the Python script
       - name: Execute Python script
