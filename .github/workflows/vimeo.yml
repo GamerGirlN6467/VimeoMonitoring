@@ -42,7 +42,7 @@ jobs:
       # 5. Run the Python script
       - name: Execute Python script
         run: |
-          python main.py
+          python search.py
         env:
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
