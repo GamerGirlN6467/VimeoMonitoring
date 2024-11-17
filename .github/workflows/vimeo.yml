@@ -36,12 +36,22 @@ jobs:
 
       # 4. Create .env file from secrets
       - name: Create .env file
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SEARCH_QUERIES: ${{ secrets.SEARCH_QUERIES }}
+          MONITORED_USERS: ${{ secrets.MONITORED_USERS }}
+          KNOWN_LINKS_FILE: ${{ secrets.KNOWN_LINKS_FILE }}
         run: |
-          printf "ACCESS_TOKEN=%s\n" "${{ secrets.ACCESS_TOKEN }}" >> .env
-          printf "DISCORD_WEBHOOK_URL=%s\n" "${{ secrets.DISCORD_WEBHOOK_URL }}" >> .env
-          printf "SEARCH_QUERIES=%s\n" "${{ secrets.SEARCH_QUERIES }}" >> .env
-          printf "MONITORED_USERS=%s\n" "${{ secrets.MONITORED_USERS }}" >> .env
-          printf "KNOWN_LINKS_FILE=%s\n" "${{ secrets.KNOWN_LINKS_FILE }}" >> .env
+          python -c "
+          import os
+          with open('.env', 'w') as f:
+              f.write(f'ACCESS_TOKEN={os.getenv("ACCESS_TOKEN")}\n')
+              f.write(f'DISCORD_WEBHOOK_URL={os.getenv("DISCORD_WEBHOOK_URL")}\n')
+              f.write(f'SEARCH_QUERIES={os.getenv("SEARCH_QUERIES")}\n')
+              f.write(f'MONITORED_USERS={os.getenv("MONITORED_USERS")}\n')
+              f.write(f'KNOWN_LINKS_FILE={os.getenv("KNOWN_LINKS_FILE")}\n')
+          "
 
       # 5. Run the Python script
       - name: Execute Python script
