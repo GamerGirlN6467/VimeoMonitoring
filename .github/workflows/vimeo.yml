@@ -1,0 +1,66 @@
+name: Scheduled Vimeo Monitor
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs daily at midnight UTC. Adjust as needed.
+  workflow_dispatch:       # Allows manual triggering of the workflow.
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Ensures full history for committing
+
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'  # Specify desired Python version
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        # If you don't have a requirements.txt, install directly:
+        # pip install requests python-dotenv
+
+      # 4. Create .env file from secrets
+      - name: Create .env file
+        run: |
+          echo "ACCESS_TOKEN=${{ secrets.ACCESS_TOKEN }}" >> .env
+          echo "DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}" >> .env
+          echo "SEARCH_QUERIES=${{ secrets.SEARCH_QUERIES }}" >> .env
+          echo "MONITORED_USERS=${{ secrets.MONITORED_USERS }}" >> .env
+          echo "KNOWN_LINKS_FILE=${{ secrets.KNOWN_LINKS_FILE }}" >> .env
+
+      # 5. Run the Python script
+      - name: Execute Python script
+        run: |
+          python main.py
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SEARCH_QUERIES: ${{ secrets.SEARCH_QUERIES }}
+          MONITORED_USERS: ${{ secrets.MONITORED_USERS }}
+          KNOWN_LINKS_FILE: ${{ secrets.KNOWN_LINKS_FILE }}
+
+      # 6. Configure Git for committing
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 7. Commit and push changes if any
+      - name: Commit and push changes
+        run: |
+          git add ${{ secrets.KNOWN_LINKS_FILE }}
+          git diff --cached --exit-code || git commit -m "Update known links [skip ci]"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
