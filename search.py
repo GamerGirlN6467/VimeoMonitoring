@@ -20,7 +20,6 @@ DISCORD_CHAR_LIMIT = 1950  # Discord's character limit
 FIELDS = "uri,name,link,description,pictures.sizes,user.link,user.name,user.pictures.sizes,width,height,created_time,duration"
 RETRY_LIMIT = 5
 DEFAULT_SLEEP_INTERVAL = 2  # Default rate limiting interval
-LOCK_FILE = "/tmp/vimeo_script.lock"
 
 def read_known_links():
     if not os.path.exists(KNOWN_LINKS_FILE):
@@ -121,6 +120,13 @@ def format_duration(seconds):
         return "N/A"
 
 def send_detailed_to_discord(video_data, keyword):
+    """
+    Send a single Discord message with multiple embeds, one for each video in video_data.
+    """
+    if not video_data:
+        return  # No videos to send
+
+    embeds = []
     for video in video_data:
         headers = {"Content-Type": "application/json"}
 
@@ -136,7 +142,6 @@ def send_detailed_to_discord(video_data, keyword):
         if user.get('pictures') and user['pictures'].get('sizes'):
             # Use the highest resolution profile picture
             user_avatar_url = user['pictures']['sizes'][-1]['link']
-            print(f"User Avatar URL: {user_avatar_url}")  # Debugging line
 
         # Format duration
         duration_seconds = video.get('duration')
@@ -201,63 +206,95 @@ def send_detailed_to_discord(video_data, keyword):
             description = trim_text(description, max_desc_length)
             embed['description'] = description
 
-        data = {"embeds": [embed]}
-        
-        # Send the request to Discord Webhook
-        request_with_retries(DISCORD_WEBHOOK_URL, headers, json=data, method="post")
+        embeds.append(embed)
 
+    # Ensure the number of embeds does not exceed Discord's limit
+    if len(embeds) > 10:
+        print(f"Number of embeds ({len(embeds)}) exceeds Discord's limit. Trimming to 10.")
+        embeds = embeds[:10]
 
-def create_lock():
-    if os.path.exists(LOCK_FILE):
-        print("Script is already running. Exiting.")
-        sys.exit(0)
+    data = {"embeds": embeds}
+
+    # Send the request to Discord Webhook
+    response = None
+    for attempt in range(RETRY_LIMIT):
+        try:
+            response = requests.post(DISCORD_WEBHOOK_URL, headers=headers, json=data)
+            if response.status_code == 204 or response.status_code == 200:
+                print(f"Sent {len(embeds)} embed(s) to Discord successfully.")
+                break
+            elif response.status_code == 429:
+                retry_after = response.json().get('retry_after', DEFAULT_SLEEP_INTERVAL)
+                print(f"Rate limited by Discord. Retrying after {retry_after} seconds.")
+                time.sleep(retry_after + 1)  # Adding 1 second buffer
+            else:
+                print(f"Failed to send embeds to Discord: {response.status_code} - {response.text}")
+                break  # Do not retry for other HTTP errors
+        except requests.exceptions.RequestException as e:
+            print(f"Request exception on attempt {attempt + 1}/{RETRY_LIMIT}: {e}")
+            time.sleep(DEFAULT_SLEEP_INTERVAL)
     else:
-        open(LOCK_FILE, 'w').close()
-
-def remove_lock():
-    if os.path.exists(LOCK_FILE):
-        os.remove(LOCK_FILE)
+        print("Exceeded maximum retries. Failed to send embeds to Discord.")
 
 def main():
-    create_lock()
     try:
         known_links = read_known_links()
         new_links = set()
-        new_video_data = []
+        # Dictionary to hold new videos per query or user
+        new_videos_per_query = {}
+        new_videos_per_user = {}
 
         # Step 1: Search for videos by keywords
         for query in SEARCH_QUERIES:
+            query = query.strip()
+            if not query:
+                continue
             response = search_vimeo(query)
             if response:
                 video_links = extract_video_links(response)
                 for item in response['data']:
                     if item['link'] not in known_links:
-                        item['matched_keyword'] = query
-                        new_video_data.append(item)
+                        # Initialize list for this query if not already
+                        if query not in new_videos_per_query:
+                            new_videos_per_query[query] = []
+                        new_videos_per_query[query].append(item)
                         new_links.add(item['link'])
 
         # Step 2: Check for videos uploaded by monitored users
         for user_id in MONITORED_USERS:
+            user_id = user_id.strip()
+            if not user_id:
+                continue
             response = get_user_uploads(user_id)
             if response:
                 for item in response['data']:
                     if item['link'] not in known_links:
-                        item['matched_keyword'] = f"User: {user_id}"
-                        new_video_data.append(item)
+                        # Initialize list for this user if not already
+                        if user_id not in new_videos_per_user:
+                            new_videos_per_user[user_id] = []
+                        new_videos_per_user[user_id].append(item)
                         new_links.add(item['link'])
 
-        # Filter new links to avoid duplicates
-        filtered_new_links = new_links - known_links
+        # Step 3: Send Discord messages grouped by query
+        for query, videos in new_videos_per_query.items():
+            if videos:
+                print(f"Found {len(videos)} new video(s) for query '{query}'. Sending to Discord...")
+                send_detailed_to_discord(videos, query)
 
-        if filtered_new_links:
-            for video in new_video_data:
-                send_detailed_to_discord([video], video['matched_keyword'])
-            known_links.update(filtered_new_links)
+        # Step 4: Send Discord messages grouped by user
+        for user_id, videos in new_videos_per_user.items():
+            if videos:
+                print(f"Found {len(videos)} new video(s) from user '{user_id}'. Sending to Discord...")
+                send_detailed_to_discord(videos, f"User: {user_id}")
+
+        # Step 5: Update known links
+        if new_links:
+            known_links.update(new_links)
             write_known_links(known_links)
         else:
             print("No new links found.")
-    finally:
-        remove_lock()
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
     main()
