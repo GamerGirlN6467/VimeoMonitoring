@@ -59,20 +59,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 7. Commit and push changes if any
-      - name: Commit and push changes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KNOWN_LINKS_FILE: ${{ secrets.KNOWN_LINKS_FILE }}
+      - name: Commit report
         run: |
-          # Ensure the KNOWN_LINKS_FILE path is correct
-          git add "$KNOWN_LINKS_FILE"
-          
-          # Check if there are changes to commit
-          git diff --cached --exit-code
-          if [ $? -ne 0 ]; then
-            git commit -m "Update known links [skip ci]"
-            git push origin HEAD:main
-          else
-            echo "No changes to commit."
-          fi
+          git commit -am "Update links"
+          git push
