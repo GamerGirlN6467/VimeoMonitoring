@@ -3,10 +3,10 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 import sys
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+#load_dotenv()
 
 # Constants
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
