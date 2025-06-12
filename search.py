@@ -19,7 +19,6 @@ DEFAULT_SLEEP_INTERVAL = 2  # Default rate limiting interval
 
 def read_known_links():
     if not os.path.exists(KNOWN_LINKS_FILE):
-        print("No known links file found. Starting with an empty set.")
         return set()
     with open(KNOWN_LINKS_FILE, 'r') as file:
         return set(line.strip() for line in file)
@@ -50,14 +49,12 @@ def handle_rate_limiting(headers):
                 # Fallback: parse as ISO 8601 string
                 reset_datetime = datetime.strptime(reset_time, '%Y-%m-%dT%H:%M:%S%z')
             except ValueError:
-                print(f"Unexpected format for X-RateLimit-Reset: {reset_time}. Using default sleep interval.")
                 time.sleep(DEFAULT_SLEEP_INTERVAL)
                 return
 
         current_time = datetime.now(timezone.utc)
         if remaining <= 1:
             sleep_time = (reset_datetime - current_time).total_seconds() + 1
-            print(f"Rate limit reached. Sleeping for {sleep_time:.2f} seconds.")
             time.sleep(max(sleep_time, 0))
         else:
             time.sleep(DEFAULT_SLEEP_INTERVAL)
@@ -82,12 +79,9 @@ def request_with_retries(url, headers, params=None, json=None, method="get"):
             else:
                 return None  # Webhook does not return JSON
         except requests.exceptions.RequestException as e:
-            print(f"Request error ({attempt + 1}/{RETRY_LIMIT}): {e}")
             time.sleep(DEFAULT_SLEEP_INTERVAL)
         except ValueError as e:
-            print(f"Error processing response ({attempt + 1}/{RETRY_LIMIT}): {e}")
             time.sleep(DEFAULT_SLEEP_INTERVAL)
-    print(f"Failed to {method.upper()} {url} after {RETRY_LIMIT} attempts.")
     return None
 
 def search_vimeo(keyword, per_page=10):
@@ -183,7 +177,7 @@ def send_detailed_to_discord(video_data, keyword):
                 # Remove 'Z' if present and parse ISO format
                 timestamp = datetime.fromisoformat(created_time.rstrip('Z')).replace(tzinfo=timezone.utc).isoformat()
             except ValueError:
-                print(f"Failed to parse created_time: {created_time}")
+                pass
 
         embed = {
             "title": title,
@@ -247,7 +241,6 @@ def main():
         # Step 1: Search for videos by keywords
         for query in SEARCH_QUERIES:
             if not query: continue # Skip empty queries
-            print(f"Searching for keyword: {query}")
             response = search_vimeo(query)
             if response:
                 for item in response.get('data', []):
@@ -259,7 +252,6 @@ def main():
         # Step 2: Check for videos uploaded by monitored users
         for user_id in MONITORED_USERS:
             if not user_id: continue # Skip empty user IDs
-            print(f"Searching for user: {user_id}")
             response = get_user_uploads(user_id)
             if response:
                 for item in response.get('data', []):
@@ -285,12 +277,9 @@ def main():
             # Step 4: Update the known links file
             newly_found_links = set(new_videos_to_post.keys())
             write_known_links(newly_found_links)
-            print(f"Added {len(newly_found_links)} new link(s) to {KNOWN_LINKS_FILE}.")
-        else:
-            print("No new links found.")
             
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        pass
 
 
 if __name__ == "__main__":
