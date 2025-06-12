@@ -222,7 +222,7 @@ def send_detailed_to_discord(video_data, keyword):
         batch_embeds = embeds[i:i+MAX_EMBEDS_PER_MESSAGE]
         if i == 0:
             data = {
-                "content": f"**New videos found for {content_title}**",
+                "content": f"New videos found for {content_title}",
                 "embeds": batch_embeds
             }
         else:
