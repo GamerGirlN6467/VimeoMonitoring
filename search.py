@@ -3,10 +3,10 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 import sys
-#from dotenv import load_dotenv
+from dotenv import load_dotenv
 
 # Load environment variables from .env file
-#load_dotenv()
+load_dotenv()
 
 # Constants
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
@@ -160,7 +160,7 @@ def send_detailed_to_discord(video_data, keyword):
 
         fields = [
             {
-                "name": "Matched Keyword",
+                "name": "Matched On",
                 "value": trim_text(keyword, 1024),
                 "inline": True
             },
@@ -223,12 +223,15 @@ def send_detailed_to_discord(video_data, keyword):
     # Now, send the embeds in batches of up to 10
     MAX_EMBEDS_PER_MESSAGE = 10
     headers = {"Content-Type": "application/json"}
+    
+    # Use a more descriptive content title
+    content_title = f"User Upload: {keyword.split(': ')[-1]}" if keyword.startswith("User:") else f"Keyword Match: {keyword}"
 
     for i in range(0, len(embeds), MAX_EMBEDS_PER_MESSAGE):
         batch_embeds = embeds[i:i+MAX_EMBEDS_PER_MESSAGE]
         if i == 0:
             data = {
-                "content": f"New videos found for keyword: {keyword}",
+                "content": f"**New videos found for {content_title}**",
                 "embeds": batch_embeds
             }
         else:
@@ -240,50 +243,58 @@ def send_detailed_to_discord(video_data, keyword):
 def main():
     try:
         known_links = read_known_links()
-        new_links = set()
-
-        # Store new videos per query
-        new_video_data_per_query = {}
+        # A dictionary to store unique new videos, mapping link to (video_data, found_by_keyword).
+        # This prevents posting the same video twice if found by multiple queries in the same run.
+        new_videos_to_post = {}
 
         # Step 1: Search for videos by keywords
         for query in SEARCH_QUERIES:
+            if not query: continue # Skip empty queries
+            print(f"Searching for keyword: {query}")
             response = search_vimeo(query)
             if response:
                 for item in response.get('data', []):
                     link = item.get('link')
-                    if link and link not in known_links:
-                        item['matched_keyword'] = query
-                        if query not in new_video_data_per_query:
-                            new_video_data_per_query[query] = []
-                        new_video_data_per_query[query].append(item)
-                        new_links.add(link)
+                    # Check if the video is new (not in file) AND not already found in this run
+                    if link and link not in known_links and link not in new_videos_to_post:
+                        new_videos_to_post[link] = (item, query)
 
         # Step 2: Check for videos uploaded by monitored users
         for user_id in MONITORED_USERS:
+            if not user_id: continue # Skip empty user IDs
+            print(f"Searching for user: {user_id}")
             response = get_user_uploads(user_id)
             if response:
                 for item in response.get('data', []):
                     link = item.get('link')
-                    if link and link not in known_links:
-                        item['matched_keyword'] = f"User: {user_id}"
-                        if user_id not in new_video_data_per_query:
-                            new_video_data_per_query[user_id] = []
-                        new_video_data_per_query[user_id].append(item)
-                        new_links.add(link)
+                    # Check if the video is new (not in file) AND not already found in this run
+                    if link and link not in known_links and link not in new_videos_to_post:
+                        keyword = f"User: {user_id}"
+                        new_videos_to_post[link] = (item, keyword)
 
-        # Filter new links to avoid duplicates
-        filtered_new_links = new_links - known_links
-
-        if filtered_new_links:
-            for query, video_list in new_video_data_per_query.items():
-                send_detailed_to_discord(video_list, query)
-            known_links.update(filtered_new_links)
-            write_known_links(filtered_new_links)  # Append only new links
-            print(f"Added {len(filtered_new_links)} new link(s) to {KNOWN_LINKS_FILE}.")
+        # Step 3: If new videos were found, process and send them
+        if new_videos_to_post:
+            # Group videos by the keyword that found them for batch sending
+            videos_to_send_by_keyword = {}
+            for link, (video_data, keyword) in new_videos_to_post.items():
+                if keyword not in videos_to_send_by_keyword:
+                    videos_to_send_by_keyword[keyword] = []
+                videos_to_send_by_keyword[keyword].append(video_data)
+            
+            # Send notifications for each group
+            for keyword, video_list in videos_to_send_by_keyword.items():
+                send_detailed_to_discord(video_list, keyword)
+            
+            # Step 4: Update the known links file
+            newly_found_links = set(new_videos_to_post.keys())
+            write_known_links(newly_found_links)
+            print(f"Added {len(newly_found_links)} new link(s) to {KNOWN_LINKS_FILE}.")
         else:
             print("No new links found.")
+            
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
+
 
 if __name__ == "__main__":
     main()
