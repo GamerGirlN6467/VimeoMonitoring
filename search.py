@@ -85,7 +85,7 @@ FIELDS = (
 RETRY_LIMIT = max(1, env_int("RETRY_LIMIT", 5))
 DEFAULT_SLEEP_INTERVAL = max(0, env_int("DEFAULT_SLEEP_INTERVAL", 2))
 LOCK_FILE = os.getenv("LOCK_FILE", "/tmp/vimeo_script.lock").strip()
-MAX_DISCORD_EMBEDS = 10
+DISCORD_EMBED_TEXT_LIMIT = 5800
 VALID_ROUTES = {"alert", "normal", "muted"}
 
 
@@ -151,13 +151,17 @@ def request_with_retries(
             if method == "get":
                 response = requests.get(url, headers=headers, params=params, timeout=30)
             elif method == "post":
-                response = requests.post(url, headers=headers, json=json_body, timeout=30)
+                response = requests.post(
+                    url, headers=headers, params=params, json=json_body, timeout=30
+                )
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
             response.raise_for_status()
             handle_rate_limiting(response.headers)
             if method == "get":
+                return response.json()
+            if response.content:
                 return response.json()
             return True
         except requests.exceptions.RequestException as exc:
@@ -475,12 +479,95 @@ def build_embed(video: Dict[str, Any], keyword: str, decision: Dict[str, Any]) -
     if timestamp:
         embed["timestamp"] = timestamp
 
-    total_length = len(title) + len(description)
+    # Discord's 6000-character embed limit is the combined text across every
+    # embed in a message. We send one video per message below, and keep a small
+    # safety margin here. author.name is part of Discord's counted embed text.
+    total_length = len(title) + len(description) + len(user_name)
     total_length += sum(len(str(field["name"])) + len(str(field["value"])) for field in fields)
-    if total_length > 6000:
-        max_description = max(0, 6000 - (total_length - len(description)))
+    if total_length > DISCORD_EMBED_TEXT_LIMIT:
+        max_description = max(0, DISCORD_EMBED_TEXT_LIMIT - (total_length - len(description)))
         embed["description"] = trim_text(description, max_description)
     return embed
+
+
+def discord_retry_after(response: requests.Response) -> float:
+    """Return Discord's requested retry delay for a 429 response."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is None:
+        try:
+            body = response.json()
+            retry_after = body.get("retry_after") if isinstance(body, dict) else None
+        except (TypeError, ValueError):
+            retry_after = None
+    try:
+        return max(0.0, float(retry_after)) if retry_after is not None else float(DEFAULT_SLEEP_INTERVAL)
+    except (TypeError, ValueError):
+        return float(DEFAULT_SLEEP_INTERVAL)
+
+
+def wait_for_discord_bucket(headers: Any) -> None:
+    """Respect Discord's per-webhook rate-limit bucket before the next send."""
+    if str(headers.get("X-RateLimit-Remaining", "")) != "0":
+        return
+    reset_after = headers.get("X-RateLimit-Reset-After")
+    try:
+        delay = max(0.0, float(reset_after))
+    except (TypeError, ValueError):
+        return
+    if delay > 0:
+        time.sleep(delay + 0.1)
+
+
+def post_discord_message(webhook_url: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Send one Discord message and return only after Discord confirms it exists."""
+    headers = {"Content-Type": "application/json"}
+
+    for attempt in range(RETRY_LIMIT):
+        try:
+            response = requests.post(
+                webhook_url,
+                headers=headers,
+                params={"wait": "true"},
+                json=payload,
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            print(f"Discord request failed ({attempt + 1}/{RETRY_LIMIT}): {type(exc).__name__}")
+            time.sleep(min(2 ** attempt, 30))
+            continue
+
+        if response.status_code == 429:
+            delay = discord_retry_after(response)
+            print(f"Discord rate limited; retrying in {delay:.2f}s.")
+            time.sleep(delay + 0.1)
+            continue
+
+        if 500 <= response.status_code < 600:
+            print(f"Discord server error HTTP {response.status_code} ({attempt + 1}/{RETRY_LIMIT}).")
+            time.sleep(min(2 ** attempt, 30))
+            continue
+
+        if not response.ok:
+            # 4xx errors other than 429 are payload/configuration errors; retrying
+            # the same payload immediately will not fix them. Keep the Vimeo link
+            # uncommitted so it can be retried after the code/config is corrected.
+            print(f"Discord rejected message: HTTP {response.status_code}; retaining video for retry.")
+            return None
+
+        try:
+            result = response.json()
+        except (TypeError, ValueError):
+            print("Discord returned success without a message object; retaining video for retry.")
+            return None
+
+        if not isinstance(result, dict) or not result.get("id"):
+            print("Discord did not return a confirmed message id; retaining video for retry.")
+            return None
+
+        wait_for_discord_bucket(response.headers)
+        return result
+
+    return None
 
 
 def send_detailed_to_discord(
@@ -495,29 +582,45 @@ def send_detailed_to_discord(
         print(f"No Discord webhook configured for route {route}; delivery skipped.")
         return set()
 
-    headers = {"Content-Type": "application/json"}
     content_title = (
         f"User Upload: {keyword.split(': ', 1)[-1]}"
         if keyword.startswith("User:")
         else f"Keyword Match: {keyword}"
     )
 
+    # Deliberately send exactly one Vimeo result per Discord webhook message.
+    # This isolates failures and makes Discord's 6000-character aggregate embed
+    # limit impossible to exceed by combining several large Vimeo descriptions.
     delivered: set[str] = set()
-    for index in range(0, len(video_data), MAX_DISCORD_EMBEDS):
-        batch_videos = video_data[index : index + MAX_DISCORD_EMBEDS]
-        embeds = [
-            build_embed(video, keyword, decision_by_link.get(str(video.get("link")), fallback_decision()))
-            for video in batch_videos
-        ]
-        payload: Dict[str, Any] = {"embeds": embeds}
-        if index == 0:
-            prefix = f"{mention} " if mention else ""
-            payload["content"] = f"{prefix}**New videos found for {content_title}**"
-            if mention:
-                payload["allowed_mentions"] = {"parse": ["users", "roles"]}
+    for video in video_data:
+        link = str(video.get("link") or "")
+        if not link:
+            continue
 
-        if request_with_retries(webhook_url, headers, json_body=payload, method="post"):
-            delivered.update(str(video["link"]) for video in batch_videos if video.get("link"))
+        decision = decision_by_link.get(link, fallback_decision())
+        embed = build_embed(video, keyword, decision)
+        prefix = f"{mention} " if mention else ""
+        payload: Dict[str, Any] = {
+            "content": f"{prefix}**New video found for {content_title}**",
+            "embeds": [embed],
+        }
+        if mention:
+            payload["allowed_mentions"] = {"parse": ["users", "roles"]}
+
+        result = post_discord_message(webhook_url, payload)
+        if not result:
+            continue
+
+        saved_urls = {
+            str(saved_embed.get("url"))
+            for saved_embed in result.get("embeds", [])
+            if isinstance(saved_embed, dict) and saved_embed.get("url")
+        }
+        if link in saved_urls:
+            delivered.add(link)
+        else:
+            print("Discord confirmation did not contain the Vimeo embed; retaining video for retry.")
+
     return delivered
 
 
