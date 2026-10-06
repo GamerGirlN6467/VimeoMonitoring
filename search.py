@@ -76,7 +76,7 @@ KNOWN_LINKS_FILE = os.getenv("KNOWN_LINKS_FILE", "known_vimeo_links.txt").strip(
 
 # Optional Codex routing configuration.
 AI_ROUTING_ENABLED = env_bool("AI_ROUTING_ENABLED", False)
-CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.6-luna").strip()
+CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-6-luna").strip()
 CODEX_BATCH_SIZE = max(1, env_int("CODEX_BATCH_SIZE", 20))
 AI_ALERT_MIN_CONFIDENCE = max(0.0, min(1.0, env_float("AI_ALERT_MIN_CONFIDENCE", 0.75)))
 INTEREST_PROFILE = os.getenv("INTEREST_PROFILE", "").strip()
